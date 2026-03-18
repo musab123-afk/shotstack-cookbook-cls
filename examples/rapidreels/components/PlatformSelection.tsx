@@ -24,6 +24,8 @@ function PlatformSelection({ config, setConfig }: ConfigProps) {
             <img
               src={platform.image}
               alt={platform.name}
+              width={150}
+              height={150}
               className="w-full h-32 object-contain rounded"
             />
             <span className="absolute bottom-2 left-2 text-white bg-black bg-opacity-50 px-2 py-1 rounded">

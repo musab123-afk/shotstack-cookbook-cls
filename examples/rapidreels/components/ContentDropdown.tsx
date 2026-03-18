@@ -25,6 +25,8 @@ function ContentDropdown({ config, setConfig }: ConfigProps) {
             <img
               src={content.image}
               alt={content.name}
+              width={150}
+              height={267}
               className="w-full h-32 object-cover rounded"
             />
             <span className="absolute bottom-2 left-2 text-white bg-black bg-opacity-50 px-2 py-1 rounded">
