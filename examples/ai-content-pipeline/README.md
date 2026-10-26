@@ -2,7 +2,7 @@
 
 Make an on-brand 9:16 video for each product in a store's product export. A brand guide in `brand.json` sets the colors, font, layout limits, voice rules, backdrops, motion and music. You get one MP4 file for each product in `out/`. A sheet in `out/approval.csv` lists each video, or the reason why the pipeline held it.
 
-Related guide: [AI content pipeline automation for brands: on-brand videos at scale](https://shotstack.io/learn/ai-content-pipeline-automation/).
+Related guide: [AI content pipeline automation with video creation for brands](https://shotstack.io/learn/ai-content-pipeline-automation-brands/).
 
 ## Requirements
 
