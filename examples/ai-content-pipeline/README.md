@@ -11,7 +11,7 @@ Related guide: [AI content pipeline automation for brands: on-brand videos at sc
 - Node.js 22.9 or later. Node 20 is end of life.
 - ffmpeg on your PATH. The pipeline uses it to take frames from each clip. It was tested with ffmpeg 8.1.
 
-AI generation always uses production credits, also with a sandbox key. The pipeline uses the production API. For each product, a run can make at most 2 images and 2 video clips. It makes one music track for the whole run. It also makes one render for each product. See [pricing](https://shotstack.io/pricing/). A request that is the same as an earlier request returns the stored file at no charge.
+AI generation always uses production credits, also with a sandbox key. The pipeline uses the production API. For each product, a run can make at most 2 images and 2 video clips. Each render also generates a voice-over. A run makes one music track for all products. It makes one render for each product. See [pricing](https://shotstack.io/pricing/). A request that is the same as an earlier request returns the stored file at no charge.
 
 ## Setup
 

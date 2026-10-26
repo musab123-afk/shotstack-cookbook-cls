@@ -7,7 +7,8 @@
 // Needs SHOTSTACK_API_KEY (production key), ANTHROPIC_API_KEY and ffmpeg on your PATH.
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const SHOTSTACK = 'https://api.shotstack.io/edit/v1';
@@ -16,6 +17,7 @@ const IMAGE_MODEL = 'nano-banana-2-edit';
 const VIDEO_MODEL = 'wan-3.0-prime-image-to-video';
 const PRODUCTS_AT_ONCE = 3;
 const MAX_TRIES = { script: 3, still: 2, clip: 2 };
+const execFileAsync = promisify(execFile);
 const REQUEST_TIMEOUT = 60_000;
 const DOWNLOAD_TIMEOUT = 300_000;
 
@@ -350,8 +352,9 @@ const sleep = seconds =>
   new Promise(resolve => setTimeout(resolve, seconds * 1000));
 
 // fetch with a time limit. A 429 is retried, because the server refused the request and
-// created nothing. A 408 or 5xx is retried only when `repeatable` is true: on a POST that
-// starts a paid job, the job may already exist, so a retry could pay twice.
+// created nothing. A 408, a 5xx, a timeout or a network error is retried only when
+// `repeatable` is true: on a POST that starts a paid job, the job may already exist, so a
+// retry could pay twice.
 async function send(
   url,
   options,
@@ -365,6 +368,10 @@ async function send(
         signal: AbortSignal.timeout(timeout)
       });
     } catch (error) {
+      if (repeatable && attempt < 5) {
+        await sleep(2 ** attempt * 2);
+        continue;
+      }
       const { host } = new URL(url);
       throw new Error(
         error.name === 'TimeoutError'
@@ -398,8 +405,11 @@ async function request(url, options, retry) {
   const res = await send(url, options, retry);
   const body = await res.json().catch(() => null);
   if (!res.ok)
-    throw new Error(
-      `${options?.method ?? 'GET'} ${url} returned ${res.status}: ${errorDetail(body)}`
+    throw Object.assign(
+      new Error(
+        `${options?.method ?? 'GET'} ${url} returned ${res.status}: ${errorDetail(body)}`
+      ),
+      { status: res.status }
     );
   if (!body || typeof body !== 'object')
     throw new Error(`${url} returned a body that is not a JSON object`);
@@ -463,7 +473,8 @@ async function waitFor(check, { every, minutes }) {
 export async function download(url, file) {
   const res = await send(url, undefined, { timeout: DOWNLOAD_TIMEOUT });
   if (!res.ok) throw new Error(`downloading ${url} returned ${res.status}`);
-  fs.writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  fs.writeFileSync(`${file}.part`, Buffer.from(await res.arrayBuffer()));
+  fs.renameSync(`${file}.part`, file);
 }
 
 // Generates one image, video or audio file and returns its URL. An identical request
@@ -489,8 +500,8 @@ export async function generate(asset, length) {
 }
 
 // ---------- Guardrails on the words ----------
-const wordPattern = word =>
-  new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wordPattern = word => new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i');
 
 export function checkScript(script, row) {
   const { voice } = brand;
@@ -504,15 +515,16 @@ export function checkScript(script, row) {
   const avoided = voice.avoid.filter(word => wordPattern(word).test(script));
   if (avoided.length)
     problems.push(`it uses words the brand avoids: ${avoided.join(', ')}`);
-  const facts = `${row.features} ${row.detail}`.toLowerCase();
+  const facts = `${row.title} ${row.features} ${row.detail}`;
   const claims = voice.claimsNeedData.filter(
-    word => wordPattern(word).test(script) && !facts.includes(word)
+    word => wordPattern(word).test(script) && !wordPattern(word).test(facts)
   );
   if (claims.length)
     problems.push(
       `it claims something the product data doesn't say: ${claims.join(', ')}`
     );
-  if (/[0-9$€£%]|\b(dollars?|cents?|bucks|discount|sale)\b/i.test(script))
+  const spoken = script.replace(new RegExp(escapeRegExp(row.title), 'gi'), '');
+  if (/[0-9$€£%]|\b(dollars?|cents?|bucks|discount|sale)\b/i.test(spoken))
     problems.push(
       'it mentions a number, price or discount (the price is on screen, from the data)'
     );
@@ -648,29 +660,36 @@ export async function makeStill(row, backdrop) {
 
 // ---------- Guardrails on the motion ----------
 // Frames from the middle and the end of the part of the clip that appears in the video
-function framesFrom(file) {
-  return [SECONDS / 2, SECONDS - 0.25].map((second, i) => {
-    const jpg = `${file}.frame${i + 1}.jpg`;
-    execFileSync('ffmpeg', [
-      '-v',
-      'error',
-      '-y',
-      '-ss',
-      String(second),
-      '-i',
-      file,
-      '-frames:v',
-      '1',
-      '-vf',
-      'scale=512:-1',
-      jpg
-    ]);
-    return {
-      type: 'base64',
-      media_type: 'image/jpeg',
-      data: fs.readFileSync(jpg).toString('base64')
-    };
-  });
+async function framesFrom(file) {
+  return Promise.all(
+    [SECONDS / 2, SECONDS - 0.25].map(async (second, i) => {
+      const jpg = `${file}.frame${i + 1}.jpg`;
+      fs.rmSync(jpg, { force: true });
+      await execFileAsync('ffmpeg', [
+        '-v',
+        'error',
+        '-y',
+        '-ss',
+        String(second),
+        '-i',
+        file,
+        '-frames:v',
+        '1',
+        '-vf',
+        'scale=512:-1',
+        jpg
+      ]).catch(() => {});
+      if (!fs.existsSync(jpg))
+        throw new Error(
+          `ffmpeg could not take a frame at ${second} seconds, the clip may be shorter`
+        );
+      return {
+        type: 'base64',
+        media_type: 'image/jpeg',
+        data: fs.readFileSync(jpg).toString('base64')
+      };
+    })
+  );
 }
 
 // An image-to-video model animates the approved still with the motion line for its product
@@ -706,7 +725,7 @@ export async function makeClip(row, still) {
     await download(url, file);
     const check = await compareWithPackshot(
       row,
-      framesFrom(file),
+      await framesFrom(file),
       `The other images are frames from a short video of "${row.title}". Every frame must show exactly the same product as image 1: the same shape, parts, color and material, with nothing added or removed (for example no new handle, strap or lid). Fail it if the product changes in any frame, or if a person, hand, text or logo appears.`
     );
     attempts.push({ url, check });
@@ -788,17 +807,27 @@ export function approvalSheet(file) {
   if (!fs.existsSync(file))
     fs.writeFileSync(file, 'handle,product,script,video,approved,notes\n');
   return {
-    add: ({ row, script, video, notes = '' }) =>
-      fs.appendFileSync(
-        file,
-        [row.handle, row.title, script, video, notes ? 'no' : '', notes]
-          .map(cell)
-          .join(',') + '\n'
-      )
+    // A row that is already in the sheet is not added again
+    add: ({ row, script, video, notes = '' }) => {
+      const held = notes.startsWith('held:');
+      const line = [
+        row.handle,
+        row.title,
+        script,
+        video,
+        held ? 'no' : '',
+        notes
+      ]
+        .map(cell)
+        .join(',');
+      if (!fs.readFileSync(file, 'utf8').split(/\r?\n/).includes(line))
+        fs.appendFileSync(file, line + '\n');
+    }
   };
 }
 
-// Saves the template once. The same template is reused until brand.json changes it.
+// Saves the template once. The same template is reused until brand.json changes it,
+// or until it is deleted from the account.
 async function getTemplateId() {
   const file = path.join(OUT, 'saved-template.json');
   const template = JSON.stringify(buildTemplate());
@@ -808,7 +837,14 @@ async function getTemplateId() {
   } catch {
     saved = null;
   }
-  if (saved?.template === template) return saved.id;
+  if (saved?.template === template) {
+    try {
+      await shotstack('GET', `/templates/${saved.id}`);
+      return saved.id;
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
+  }
   const id = await saveTemplate();
   fs.writeFileSync(file, JSON.stringify({ id, template }));
   return id;
@@ -849,7 +885,7 @@ async function makeVideo(row, backdrop, templateId, music) {
       row,
       script: copy.script,
       video: video.url,
-      notes: `the render is done, but the download failed (${error.message}). Save the video as out/${row.handle}.mp4 to skip it on the next run`
+      notes: `the render is done, but the download failed (${error.message}). Download it from ${video.downloadUrl} within 24 hours, and save it as out/${row.handle}.mp4 to skip it on the next run`
     };
   }
   return { row, script: copy.script, video: video.url };
@@ -894,7 +930,7 @@ async function main() {
       `Set ${missing.join(' and ')} first (see .env.example). To check the template without keys, use --dry.`
     );
   try {
-    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+    await execFileAsync('ffmpeg', ['-version']);
   } catch {
     throw new Error(
       'ffmpeg is not on your PATH. The pipeline uses it to check each clip. Install it, then run again.'
@@ -928,8 +964,9 @@ async function main() {
     }
   });
 
-  // Each product can use every try on its stills and clips. The music is generated once.
-  const worstCase = `${ready.length} products, at most ${ready.length * (MAX_TRIES.still + MAX_TRIES.clip) + 1} generations and ${ready.length} renders, all on production credits.`;
+  // Each product can use every try on its stills and clips, and its render generates a
+  // voice-over. The music is generated once.
+  const worstCase = `${ready.length} products, at most ${ready.length * (MAX_TRIES.still + MAX_TRIES.clip + 1) + 1} generations (images, clips, voice-overs and music) and ${ready.length} renders, all on production credits.`;
   if (ready.length && !args.includes('--yes'))
     throw new Error(`${worstCase} Add --yes to start. Nothing was spent.`);
   fs.mkdirSync(path.join(OUT, 'clips'), { recursive: true });
