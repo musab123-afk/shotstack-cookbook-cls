@@ -603,15 +603,15 @@ async function compareWithPackshot(row, images, instructions) {
   };
 }
 
-// An image-edit model puts the store's real product, alone, on a brand backdrop, using the
-// packshot as its reference. The prompt comes from brand.json, so nobody types a free prompt.
+// An image-edit model puts the store's real product on a brand backdrop, or in the scene
+// brand.json sets for its type, using the packshot as its reference. The prompt comes from brand.json, so nobody types a free prompt.
 export async function makeStill(row, backdrop) {
   const { visual } = brand;
   const attempts = [];
   for (let i = 0; i < MAX_TRIES.still; i++) {
     const issues = attempts.at(-1)?.check.issues;
     const prompt = [
-      visual.shot
+      (visual.scenes?.[row.product_type] ?? visual.shot)
         .replace('{backdrop}', backdrop)
         .replace('{light}', visual.light),
       ...visual.rules,
@@ -626,14 +626,14 @@ export async function makeStill(row, backdrop) {
       options: {
         imageUrls: [row.image_src],
         aspectRatio: '3:4',
-        resolution: '1K'
+        resolution: '2K'
       }
     });
     // The checker gets the same rules from brand.json as the image model
     const check = await compareWithPackshot(
       row,
       [{ type: 'url', url }],
-      `Image 2 is a generated studio shot that must show exactly the same product as image 1 ("${row.title}"), alone. Compare color, shape, material and visible details. Fail it if anything a shopper would notice is different, or if it breaks any of these rules: ${visual.rules.join(' ')}`
+      `Image 2 is a generated studio shot that must show exactly the same product as image 1 ("${row.title}"), and no other product. Compare color, shape, material and visible details. Fail it if anything a shopper would notice is different, or if it breaks any of these rules: ${visual.rules.join(' ')}`
     );
     attempts.push({ url, check });
     if (check.pass) {
@@ -704,7 +704,7 @@ export async function makeClip(row, still) {
         options: {
           startSrc: still,
           aspectRatio: '3:4',
-          resolution: '720p',
+          resolution: '1080p',
           generateAudio: false
         }
       },
@@ -715,7 +715,7 @@ export async function makeClip(row, still) {
     const check = await compareWithPackshot(
       row,
       await framesFrom(file),
-      `The other images are frames from a short video of "${row.title}". Every frame must show exactly the same product as image 1: the same shape, parts, color and material, with nothing added or removed (for example no new handle, strap or lid). Fail it if the product changes in any frame, or if a person, hand, text or logo appears.`
+      `The other images are frames from a short video of "${row.title}". Every frame must show exactly the same product as image 1: the same shape, parts, color and material, with nothing added or removed (for example no new handle, strap or lid). Fail it if the product changes in any frame, or if a person, hand, text or logo appears. The motion this video was asked for is expected and passes: ${visual.motion[row.product_type]}`
     );
     attempts.push({ url, check });
     if (check.pass) {

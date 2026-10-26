@@ -83,20 +83,23 @@
       "deep forest-green"
     ],
     "shot": "Studio product photo, vertical framing. The exact product from the reference image, alone, on a {backdrop} seamless paper backdrop, {light}. Keep the product's color, shape, material and details exactly as in the reference.",
+    "scenes": {
+      "Textiles": "Photo, vertical framing. The exact product from the reference image hanging from a wooden peg on a {backdrop} painted kitchen wall, front facing the camera, its ties hanging loose. Below it, the edge of a pale wooden worktop lightly dusted with flour, with a small heap of flour and a wooden rolling pin. {light}. Keep the product's color, shape, material and details exactly as in the reference."
+    },
     "light": "soft natural side light, a gentle shadow",
     "rules": [
       "Product only: no people, faces, hands or body parts.",
       "No text, logos, labels or packaging.",
-      "Nothing else in frame: no window, wall, furniture or props, and nothing that could be mistaken for a second product."
+      "No window, no props except the ones the shot describes, and nothing that could be mistaken for a second product."
     ],
     "motion": {
       "Apparel": "A soft breeze lifts the hem and sleeves, which sway and slowly settle.",
-      "Textiles": "A soft breeze catches the fabric: the long ties and the hem lift and sway, then slowly settle.",
-      "Ceramics": "Sunlight through leaves outside a window casts soft moving leaf shadows that drift slowly across the piece and the backdrop. The piece itself stays still.",
+      "Textiles": "The apron has just been hung on the peg: it swings gently and settles, its long ties swaying. A soft puff of flour rises from the worktop and drifts slowly through the light, then settles.",
+      "Ceramics": "A small green seedling pushes up out of the planter and grows into a lush leafy plant, new leaves unfurling one after another. The planter and its saucer never move.",
       "Lighting": "The lamp sways gently on its cord, then switches on; warm light glows through the shade and throws patterned shadows across the backdrop.",
       "Glassware": "The water inside ripples gently and light shimmers through the glass onto the backdrop."
     },
-    "camera": "The camera stays still and the motion is clearly visible. The product never turns or rotates, so no unseen side is shown, and its shape never changes. Nothing new enters the frame. No people or hands appear."
+    "camera": "The camera stays still or slowly pushes in, and the motion is clearly visible. The product never turns or rotates, so no unseen side is shown, and its shape, color and details never change. No people or hands appear."
   },
   "music": {
     "model": "elevenlabs-music",
