@@ -57,6 +57,6 @@ For each product, the pipeline does these steps:
 
 A product that fails a check is held, with the reason, in `out/approval.csv`. The checks are a first filter. A person still approves each video before it is posted. Each render has a permanent public link in the sheet.
 
-Run the pipeline again to continue. It adds rows to `out/approval.csv` and keeps your notes. It skips each product that has an `out/<handle>.mp4` file. It reuses the saved template until `brand.json` changes it.
+Run the pipeline again to continue. It adds rows to `out/approval.csv` and keeps your notes. It skips each product that has an `out/<handle>.mp4` file. Each run saves the template again, so you can delete old copies in the dashboard.
 
 To use another store, change `brand.json`, not the code. A product type with no motion line, or a badge with no label, is held with a message that says what to add.

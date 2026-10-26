@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const SHOTSTACK = 'https://api.shotstack.io/edit/v1';
@@ -256,16 +256,8 @@ export function buildTemplate() {
 
 // ---------- The store's data ----------
 // Reads a CSV export, including quoted fields that contain commas, quotes or line breaks.
-const COLUMNS = [
-  'handle',
-  'title',
-  'product_type',
-  'price',
-  'detail',
-  'badge',
-  'features',
-  'image_src'
-];
+const COLUMNS =
+  'handle title product_type price detail badge features image_src'.split(' ');
 
 export function readProducts(file) {
   let text;
@@ -603,10 +595,7 @@ async function compareWithPackshot(row, images, instructions) {
     { type: 'text', text: instructions }
   ];
   const verdicts = (
-    await Promise.all([
-      askClaude(CHECKER, content),
-      askClaude(CHECKER, content)
-    ])
+    await Promise.all([1, 2].map(() => askClaude(CHECKER, content)))
   ).map(readVerdict);
   return {
     pass: verdicts.every(v => v.pass),
@@ -826,30 +815,6 @@ export function approvalSheet(file) {
   };
 }
 
-// Saves the template once. The same template is reused until brand.json changes it,
-// or until it is deleted from the account.
-async function getTemplateId() {
-  const file = path.join(OUT, 'saved-template.json');
-  const template = JSON.stringify(buildTemplate());
-  let saved;
-  try {
-    saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    saved = null;
-  }
-  if (saved?.template === template) {
-    try {
-      await shotstack('GET', `/templates/${saved.id}`);
-      return saved.id;
-    } catch (error) {
-      if (error.status !== 404) throw error;
-    }
-  }
-  const id = await saveTemplate();
-  fs.writeFileSync(file, JSON.stringify({ id, template }));
-  return id;
-}
-
 async function makeVideo(row, backdrop, templateId, music) {
   const copy = await writeScript(row);
   if (!copy.script)
@@ -903,16 +868,12 @@ async function inParallel(items, limit, fn) {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  const files = args.filter(arg => arg.endsWith('.csv'));
-  const unknown = args.filter(
-    arg => arg !== '--dry' && arg !== '--yes' && !arg.endsWith('.csv')
-  );
-  if (unknown.length || files.length > 1)
-    throw new Error(
-      `Unknown argument: ${[...unknown, ...files.slice(1)].join(' ')}. Use --dry, --yes and one .csv file at most.`
-    );
-  if (args.includes('--dry')) {
+  const { values: flags, positionals: files } = parseArgs({
+    options: { dry: { type: 'boolean' }, yes: { type: 'boolean' } },
+    allowPositionals: true
+  });
+  if (files.length > 1) throw new Error('Pass one .csv file at most.');
+  if (flags.dry) {
     fs.mkdirSync(OUT, { recursive: true });
     fs.writeFileSync(
       path.join(OUT, 'template.json'),
@@ -967,7 +928,7 @@ async function main() {
   // Each product can use every try on its stills and clips, and its render generates a
   // voice-over. The music is generated once.
   const worstCase = `${ready.length} products, at most ${ready.length * (MAX_TRIES.still + MAX_TRIES.clip + 1) + 1} generations (images, clips, voice-overs and music) and ${ready.length} renders, all on production credits.`;
-  if (ready.length && !args.includes('--yes'))
+  if (ready.length && !flags.yes)
     throw new Error(`${worstCase} Add --yes to start. Nothing was spent.`);
   fs.mkdirSync(path.join(OUT, 'clips'), { recursive: true });
   const sheet = approvalSheet(path.join(OUT, 'approval.csv'));
@@ -982,7 +943,7 @@ async function main() {
       'anthropic-version': '2023-06-01'
     }
   });
-  const templateId = await getTemplateId();
+  const templateId = await saveTemplate();
   const music = await generateMusic();
   console.log(`Template ${templateId} ready, music ready`);
 
@@ -999,12 +960,6 @@ async function main() {
 
 // Run main() only when this file is run directly, so other scripts can import its functions
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.on('SIGINT', () => {
-    console.error(
-      '\nStopped. Jobs that already started may still use credits.'
-    );
-    process.exit(130);
-  });
   main().catch(error => {
     console.error(error.message);
     process.exit(1);
