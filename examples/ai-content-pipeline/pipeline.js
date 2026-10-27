@@ -307,7 +307,9 @@ function parseCsv(text, file) {
 const COLUMNS =
   'handle title product_type price detail badge features image_src'.split(' ');
 
-export function readProducts(file) {
+// The rows of a CSV file as objects keyed by its header, after a check that the columns
+// the caller needs are there and that every row has as many fields as the header
+function readCsv(file, required) {
   let text;
   try {
     text = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
@@ -316,7 +318,7 @@ export function readProducts(file) {
   }
   const [header = [], ...records] = parseCsv(text, file);
   const names = header.map(name => name.trim());
-  const absent = COLUMNS.filter(name => !names.includes(name));
+  const absent = required.filter(name => !names.includes(name));
   if (absent.length)
     throw new Error(`${file} has no ${absent.join(', ')} column`);
   const odd = records.findIndex(record => record.length !== names.length);
@@ -324,10 +326,13 @@ export function readProducts(file) {
     throw new Error(
       `${file}, row ${odd + 1}: ${records[odd].length} fields, but the header has ${names.length}`
     );
-  return records.map(record =>
+  const rows = records.map(record =>
     Object.fromEntries(names.map((name, i) => [name, record[i].trim()]))
   );
+  return { names, rows };
 }
+
+export const readProducts = file => readCsv(file, COLUMNS).rows;
 
 // What goes on screen comes from the data, never from the AI. Every row is checked against
 // the layout and the brand guide before anything is spent on it.
@@ -844,21 +849,13 @@ export function approvalSheet(file) {
       .replace(/^[=+\-@]/, "'$&")
       .replace(/"/g, '""')}"`;
   // The file keeps its own header, so a column the reviewer adds or moves survives a rewrite
-  const read = () => {
-    const [header = columns, ...records] = fs.existsSync(file)
-      ? parseCsv(fs.readFileSync(file, 'utf8'), file)
-      : [];
-    const names = header.map(name => name.trim());
-    const rows = records.map(record =>
-      Object.fromEntries(names.map((name, i) => [name, record[i] ?? '']))
-    );
-    return { names, rows };
-  };
+  const read = () =>
+    fs.existsSync(file) ? readCsv(file, columns) : { names: columns, rows: [] };
   const write = (names, rows) =>
     fs.writeFileSync(
       file,
       [
-        names.join(','),
+        names.map(cell).join(','),
         ...rows.map(row => names.map(name => cell(row[name])).join(','))
       ].join('\n') + '\n'
     );
@@ -933,7 +930,7 @@ async function makeVideo(row, backdrop, templateId, music) {
       row,
       script: copy.script,
       video: video.url,
-      notes: `the render is done, but the download failed (${error.message}). The next run downloads it from the link in this row`
+      notes: `the render is done, but the download failed (${error.message}). The next run tries the link in this row before it renders the product again`
     };
   }
   return { row, script: copy.script, video: video.url };
