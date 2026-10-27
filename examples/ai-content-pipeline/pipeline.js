@@ -24,6 +24,9 @@ const DOWNLOAD_TIMEOUT = 300_000;
 // Files next to this script, wherever the script is run from
 const here = file => fileURLToPath(new URL(file, import.meta.url));
 const OUT = here('out');
+// A value from a map in brand.json. A plain lookup would also find "constructor"
+const own = (map, key) =>
+  Object.hasOwn(map ?? {}, key) ? map[key] : undefined;
 
 function readBrand() {
   try {
@@ -311,7 +314,7 @@ export function readProducts(file) {
 // the layout and the brand guide before anything is spent on it.
 export function checkRow(row) {
   const values = {
-    LABEL: brand.labels[row.badge] ?? '',
+    LABEL: own(brand.labels, row.badge) ?? '',
     TITLE: row.title ?? '',
     DETAIL: `${row.price} · ${row.detail}`
   };
@@ -322,7 +325,7 @@ export function checkRow(row) {
     problems.push(`the handle "${row.handle}" can only use a-z, 0-9 and -`);
   if (!values.LABEL)
     problems.push(`brand.json has no label for the badge "${row.badge}"`);
-  if (!brand.visual.motion[row.product_type])
+  if (!own(brand.visual.motion, row.product_type))
     problems.push(
       `brand.json has no motion line for the product type "${row.product_type}"`
     );
@@ -422,7 +425,10 @@ const shotstack = (method, path, body) =>
     { repeatable: method === 'GET' }
   );
 
-// A retry here is safe: a failed request has no effect, and a repeated one costs a few tokens
+// A retry here is safe: a failed request has no effect, and a repeated one costs a few tokens.
+// The model thinks before it answers and the thinking counts against max_tokens, so the
+// limit leaves room for it. A low effort is enough for a 12-word script or a verdict on
+// two images.
 async function askClaude(system, content) {
   const reply = await request('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -433,11 +439,14 @@ async function askClaude(system, content) {
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1000,
+      max_tokens: 4000,
+      output_config: { effort: 'low' },
       system,
       messages: [{ role: 'user', content }]
     })
   });
+  if (reply.stop_reason !== 'end_turn')
+    throw new Error(`Claude stopped early (${reply.stop_reason})`);
   return reply.content.map(block => block.text ?? '').join('');
 }
 
@@ -451,13 +460,13 @@ function parseJson(text) {
 }
 
 // Calls check() until it returns something, with a time limit
-async function waitFor(check, { every, minutes }) {
+async function waitFor(what, check, { every, minutes }) {
   const deadline = Date.now() + minutes * 60_000;
   for (;;) {
     const result = await check();
     if (result) return result;
     if (Date.now() > deadline)
-      throw new Error(`still not finished after ${minutes} minutes`);
+      throw new Error(`${what} is still not finished after ${minutes} minutes`);
     await sleep(every);
   }
 }
@@ -478,6 +487,7 @@ export async function generate(asset, length) {
     length ? { asset, length } : { asset }
   );
   return waitFor(
+    `${asset.type} generation ${job.id}`,
     async () => {
       if (job.status !== 'done' && job.status !== 'failed')
         job = await shotstack('GET', `/generate/${job.id}`);
@@ -538,7 +548,7 @@ export async function writeScript(row) {
     `Never use numbers, prices, discounts, exclamation marks, quote marks or emoji. Never use these words: ${voice.avoid.join(', ')}.`,
     `Scripts in our voice:\n${voice.examples.map(line => `- ${line}`).join('\n')}`
   ].join('\n');
-  const product = `Product: ${row.title}. Type: ${row.product_type}. Features: ${row.features}. Detail: ${row.detail}. Badge: ${row.badge}, so ${voice.hooks[row.badge] ?? 'open by naming the product'}.`;
+  const product = `Product: ${row.title}. Type: ${row.product_type}. Features: ${row.features}. Detail: ${row.detail}. Badge: ${row.badge}, so ${own(voice.hooks, row.badge) ?? 'open by naming the product'}.`;
   const attempts = [];
   let prompt = product;
   for (let i = 0; i < MAX_TRIES.script; i++) {
@@ -611,9 +621,9 @@ export async function makeStill(row, backdrop) {
   for (let i = 0; i < MAX_TRIES.still; i++) {
     const issues = attempts.at(-1)?.check.issues;
     const prompt = [
-      (visual.scenes?.[row.product_type] ?? visual.shot)
-        .replace('{backdrop}', backdrop)
-        .replace('{light}', visual.light),
+      (own(visual.scenes, row.product_type) ?? visual.shot)
+        .replaceAll('{backdrop}', backdrop)
+        .replaceAll('{light}', visual.light),
       ...visual.rules,
       ...(issues
         ? [`Fix these problems from the last attempt: ${issues.join(' ')}`]
@@ -654,7 +664,7 @@ async function framesFrom(file) {
     [SECONDS / 2, SECONDS - 0.25].map(async (second, i) => {
       const jpg = `${file}.frame${i + 1}.jpg`;
       fs.rmSync(jpg, { force: true });
-      await execFileAsync('ffmpeg', [
+      const { stderr } = await execFileAsync('ffmpeg', [
         '-v',
         'error',
         '-y',
@@ -667,10 +677,10 @@ async function framesFrom(file) {
         '-vf',
         'scale=512:-1',
         jpg
-      ]).catch(() => {});
+      ]).catch(error => error);
       if (!fs.existsSync(jpg))
         throw new Error(
-          `ffmpeg could not take a frame at ${second} seconds, the clip may be shorter`
+          `ffmpeg could not take a frame at ${second} seconds from ${path.basename(file)}: ${stderr?.trim() || 'the clip may be shorter'}`
         );
       return {
         type: 'base64',
@@ -763,6 +773,7 @@ export async function renderVideo(templateId, values) {
       'the render request was accepted but the reply has no render id'
     );
   const done = await waitFor(
+    `render ${queued.id}`,
     async () => {
       const { response: render } = await shotstack(
         'GET',
@@ -796,20 +807,15 @@ export function approvalSheet(file) {
   if (!fs.existsSync(file))
     fs.writeFileSync(file, 'handle,product,script,video,approved,notes\n');
   return {
-    // A row that is already in the sheet is not added again
+    // A row that is already in the sheet is not added again, whatever the reviewer
+    // wrote in its approved and notes cells
     add: ({ row, script, video, notes = '' }) => {
+      const key =
+        [row.handle, row.title, script, video].map(cell).join(',') + ',';
       const held = notes.startsWith('held:');
-      const line = [
-        row.handle,
-        row.title,
-        script,
-        video,
-        held ? 'no' : '',
-        notes
-      ]
-        .map(cell)
-        .join(',');
-      if (!fs.readFileSync(file, 'utf8').split(/\r?\n/).includes(line))
+      const line = key + [held ? 'no' : '', notes].map(cell).join(',');
+      const rows = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+      if (!rows.some(existing => existing.startsWith(key)))
         fs.appendFileSync(file, line + '\n');
     }
   };
@@ -929,7 +935,7 @@ async function main() {
   // voice-over. The music is generated once.
   const worstCase = `${ready.length} products, at most ${ready.length * (MAX_TRIES.still + MAX_TRIES.clip + 1) + 1} generations (images, clips, voice-overs and music) and ${ready.length} renders, all on production credits.`;
   if (ready.length && !flags.yes)
-    throw new Error(`${worstCase} Add --yes to start. Nothing was spent.`);
+    return console.log(`${worstCase} Add --yes to start. Nothing was spent.`);
   fs.mkdirSync(path.join(OUT, 'clips'), { recursive: true });
   const sheet = approvalSheet(path.join(OUT, 'approval.csv'));
   held.forEach(sheet.add);
