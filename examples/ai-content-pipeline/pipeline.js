@@ -316,7 +316,8 @@ function readCsv(file, required) {
   } catch (error) {
     throw new Error(`Can't read ${file}: ${error.code ?? error.message}`);
   }
-  const [header = [], ...records] = parseCsv(text, file);
+  // An empty file has the columns the caller needs and no rows
+  const [header = required, ...records] = parseCsv(text, file);
   const names = header.map(name => name.trim());
   const absent = required.filter(name => !names.includes(name));
   if (absent.length)
