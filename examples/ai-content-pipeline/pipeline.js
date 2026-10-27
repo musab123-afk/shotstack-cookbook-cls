@@ -45,8 +45,7 @@ function readBrand() {
     process.exit(1);
   }
   const missing = BRAND_KEYS.filter(
-    key =>
-      key.split('.').reduce((value, part) => value?.[part], guide) === undefined
+    key => key.split('.').reduce((value, part) => value?.[part], guide) == null
   );
   if (missing.length) {
     console.error(`brand.json needs ${missing.join(', ')}`);
@@ -341,8 +340,10 @@ export function checkRow(row) {
   const problems = ['handle', 'title', 'price', 'detail']
     .filter(field => !row[field])
     .map(field => `the ${field} is missing`);
-  if (row.handle && !/^[a-z0-9-]+$/.test(row.handle))
-    problems.push(`the handle "${row.handle}" can only use a-z, 0-9 and -`);
+  if (row.handle && !/^[a-z0-9][a-z0-9-]*$/.test(row.handle))
+    problems.push(
+      `the handle "${row.handle}" must start with a letter or a digit and can only use a-z, 0-9 and -`
+    );
   if (!values.LABEL)
     problems.push(`brand.json has no label for the badge "${row.badge}"`);
   if (!own(brand.visual.motion, row.product_type))
@@ -842,34 +843,37 @@ export function approvalSheet(file) {
     `"${String(value ?? '')
       .replace(/^[=+\-@]/, "'$&")
       .replace(/"/g, '""')}"`;
-  const read = () =>
-    fs.existsSync(file)
+  // The file keeps its own header, so a column the reviewer adds or moves survives a rewrite
+  const read = () => {
+    const [header = columns, ...records] = fs.existsSync(file)
       ? parseCsv(fs.readFileSync(file, 'utf8'), file)
-          .slice(1)
-          .map(record =>
-            Object.fromEntries(
-              columns.map((name, i) => [name, record[i] ?? ''])
-            )
-          )
       : [];
-  const write = rows =>
+    const names = header.map(name => name.trim());
+    const rows = records.map(record =>
+      Object.fromEntries(names.map((name, i) => [name, record[i] ?? '']))
+    );
+    return { names, rows };
+  };
+  const write = (names, rows) =>
     fs.writeFileSync(
       file,
       [
-        columns.join(','),
-        ...rows.map(row => columns.map(name => cell(row[name])).join(','))
+        names.join(','),
+        ...rows.map(row => names.map(name => cell(row[name])).join(','))
       ].join('\n') + '\n'
     );
   return {
-    // The permanent link of the video made for this handle in an earlier run, if any
-    videoFor: handle => read().find(r => r.handle === handle && r.video)?.video,
+    // The permanent link of the latest video made for this handle in an earlier run, if any
+    videoFor: handle =>
+      read().rows.findLast(r => r.handle === handle && r.video)?.video,
     add: ({ row, script = '', video = '', notes = '' }) => {
-      const rows = read().filter(r => !(r.handle === row.handle && !r.video));
+      const { names, rows } = read();
+      const kept = rows.filter(r => !(r.handle === row.handle && !r.video));
       if (
         !video ||
-        !rows.some(r => r.handle === row.handle && r.video === video)
+        !kept.some(r => r.handle === row.handle && r.video === video)
       )
-        rows.push({
+        kept.push({
           handle: row.handle,
           product: row.title,
           script,
@@ -877,7 +881,7 @@ export function approvalSheet(file) {
           approved: notes.startsWith('held:') ? 'no' : '',
           notes
         });
-      write(rows);
+      write(names, kept);
     }
   };
 }
@@ -929,7 +933,7 @@ async function makeVideo(row, backdrop, templateId, music) {
       row,
       script: copy.script,
       video: video.url,
-      notes: `the render is done, but the download failed (${error.message}). Download it from ${video.downloadUrl} within 24 hours, and save it as out/${row.handle}.mp4 to skip it on the next run`
+      notes: `the render is done, but the download failed (${error.message}). The next run downloads it from the link in this row`
     };
   }
   return { row, script: copy.script, video: video.url };

@@ -57,6 +57,6 @@ For each product, the pipeline does these steps:
 
 A product that fails a check is held, with the reason, in `out/approval.csv`. The checks are a first filter. A person still approves each video before it is posted. Each render has a permanent public link in the sheet.
 
-Run the pipeline again to continue. It skips each product that has an `out/<handle>.mp4` file. If a video was rendered but not downloaded, it downloads the video from the link in the sheet. It does not render it again. A held row in the sheet is replaced on the next run. A row with a video keeps your review. The first run saves the template and keeps its id in `out/template.id`. Later runs update that template.
+Run the pipeline again to continue. It skips each product that has an `out/<handle>.mp4` file. If a video was rendered but not downloaded, it downloads the video from the link in the sheet. It does not render it again. A held row in the sheet is replaced on the next run. A row with a video keeps your review. To make a product again, delete its video file and its row in the sheet. The first run saves the template and keeps its id in `out/template.id`. Later runs update that template.
 
 To use another store, change `brand.json`, not the code. A product type with no motion line, or a badge with no label, is held with a message that says what to add. A missing key in `brand.json` stops the run with the name of the key.
