@@ -28,13 +28,31 @@ const OUT = here('out');
 const own = (map, key) =>
   Object.hasOwn(map ?? {}, key) ? map[key] : undefined;
 
+// Every key the pipeline reads from brand.json, so a missing one is named before anything runs
+const BRAND_KEYS =
+  `name labels layout.titleMax layout.detailMax colors.panel colors.text
+  colors.mark font.family font.src voice.tone voice.maxWords voice.avoid voice.claimsNeedData
+  voice.avoidPatterns voice.hooks voice.examples voiceover.model voiceover.voice visual.backdrops
+  visual.shot visual.light visual.rules visual.motion visual.camera music.model music.prompt
+  music.options`.split(/\s+/);
+
 function readBrand() {
+  let guide;
   try {
-    return JSON.parse(fs.readFileSync(here('brand.json'), 'utf8'));
+    guide = JSON.parse(fs.readFileSync(here('brand.json'), 'utf8'));
   } catch (error) {
     console.error(`brand.json: ${error.message}`);
     process.exit(1);
   }
+  const missing = BRAND_KEYS.filter(
+    key =>
+      key.split('.').reduce((value, part) => value?.[part], guide) === undefined
+  );
+  if (missing.length) {
+    console.error(`brand.json needs ${missing.join(', ')}`);
+    process.exit(1);
+  }
+  return guide;
 }
 
 export const brand = readBrand();
@@ -258,17 +276,8 @@ export function buildTemplate() {
 }
 
 // ---------- The store's data ----------
-// Reads a CSV export, including quoted fields that contain commas, quotes or line breaks.
-const COLUMNS =
-  'handle title product_type price detail badge features image_src'.split(' ');
-
-export function readProducts(file) {
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-  } catch (error) {
-    throw new Error(`Can't read ${file}: ${error.code ?? error.message}`);
-  }
+// The rows of a CSV text, including quoted fields that contain commas, quotes or line breaks
+function parseCsv(text, file) {
   const rows = [[]];
   let field = '';
   let quoted = false;
@@ -293,9 +302,20 @@ export function readProducts(file) {
   if (quoted)
     throw new Error(`${file} has a quoted field that is never closed`);
   rows.at(-1).push(field);
-  const [header = [], ...records] = rows.filter(row =>
-    row.some(value => value.trim())
-  );
+  return rows.filter(row => row.some(value => value.trim()));
+}
+
+const COLUMNS =
+  'handle title product_type price detail badge features image_src'.split(' ');
+
+export function readProducts(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+  } catch (error) {
+    throw new Error(`Can't read ${file}: ${error.code ?? error.message}`);
+  }
+  const [header = [], ...records] = parseCsv(text, file);
   const names = header.map(name => name.trim());
   const absent = COLUMNS.filter(name => !names.includes(name));
   if (absent.length)
@@ -740,13 +760,32 @@ export async function makeClip(row, still) {
 }
 
 // ---------- Rendering ----------
+// The first run saves the template and keeps its id in out/template.id. Later runs update
+// that template, so a change to brand.json applies and the dashboard has one copy.
 export async function saveTemplate() {
-  const { response } = await shotstack('POST', '/templates', {
+  const idFile = path.join(OUT, 'template.id');
+  const body = {
     name: `${brand.name} product video`,
     template: buildTemplate()
-  });
+  };
+  const saved = fs.existsSync(idFile)
+    ? fs.readFileSync(idFile, 'utf8').trim()
+    : '';
+  // A 404 means the template was deleted in the dashboard, so it is saved again below
+  const updated =
+    saved &&
+    (await shotstack('PUT', `/templates/${saved}`, body).then(
+      () => true,
+      error => {
+        if (error.status !== 404) throw error;
+        return false;
+      }
+    ));
+  if (updated) return saved;
+  const { response } = await shotstack('POST', '/templates', body);
   if (!response?.id)
     throw new Error('the template was saved but the reply has no id');
+  fs.writeFileSync(idFile, response.id);
   return response.id;
 }
 
@@ -796,29 +835,66 @@ export async function renderVideo(templateId, values) {
   };
 }
 
-// A person approves every video before it's posted. Rows are added as products finish,
-// and a sheet from an earlier run keeps its rows and its review.
+// A person approves every video before it's posted. Rows are added as products finish.
+// A held row belongs to the pipeline: the next run that looks at the product replaces it.
+// A row with a video belongs to the reviewer and is never changed.
 export function approvalSheet(file) {
+  const columns = ['handle', 'product', 'script', 'video', 'approved', 'notes'];
   // A cell that starts with = + - or @ would run as a formula in a spreadsheet
   const cell = value =>
     `"${String(value ?? '')
       .replace(/^[=+\-@]/, "'$&")
       .replace(/"/g, '""')}"`;
-  if (!fs.existsSync(file))
-    fs.writeFileSync(file, 'handle,product,script,video,approved,notes\n');
+  const read = () =>
+    fs.existsSync(file)
+      ? parseCsv(fs.readFileSync(file, 'utf8'), file)
+          .slice(1)
+          .map(record =>
+            Object.fromEntries(
+              columns.map((name, i) => [name, record[i] ?? ''])
+            )
+          )
+      : [];
+  const write = rows =>
+    fs.writeFileSync(
+      file,
+      [
+        columns.join(','),
+        ...rows.map(row => columns.map(name => cell(row[name])).join(','))
+      ].join('\n') + '\n'
+    );
   return {
-    // A row that is already in the sheet is not added again, whatever the reviewer
-    // wrote in its approved and notes cells
-    add: ({ row, script, video, notes = '' }) => {
-      const key =
-        [row.handle, row.title, script, video].map(cell).join(',') + ',';
-      const held = notes.startsWith('held:');
-      const line = key + [held ? 'no' : '', notes].map(cell).join(',');
-      const rows = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-      if (!rows.some(existing => existing.startsWith(key)))
-        fs.appendFileSync(file, line + '\n');
+    // The permanent link of the video made for this handle in an earlier run, if any
+    videoFor: handle => read().find(r => r.handle === handle && r.video)?.video,
+    add: ({ row, script = '', video = '', notes = '' }) => {
+      const rows = read().filter(r => !(r.handle === row.handle && !r.video));
+      if (
+        !video ||
+        !rows.some(r => r.handle === row.handle && r.video === video)
+      )
+        rows.push({
+          handle: row.handle,
+          product: row.title,
+          script,
+          video,
+          approved: notes.startsWith('held:') ? 'no' : '',
+          notes
+        });
+      write(rows);
     }
   };
+}
+
+// A video from an earlier run that was never downloaded. The sheet has its permanent link.
+async function downloadEarlier(handle, url) {
+  try {
+    await download(url, path.join(OUT, `${handle}.mp4`));
+    console.log(`${handle}: downloaded the video from the earlier run`);
+    return true;
+  } catch (error) {
+    console.log(`${handle}: ${error.message}, so the video is made again`);
+    return false;
+  }
 }
 
 async function makeVideo(row, backdrop, templateId, music) {
@@ -907,15 +983,18 @@ async function main() {
     files[0] ? path.resolve(files[0]) : here('products.csv')
   );
 
-  // Check every row, and skip the products that already have a video
+  // Check every row, and skip the products that already have a video. A video that was
+  // rendered in an earlier run but not downloaded is downloaded again, not made again.
+  const sheet = approvalSheet(path.join(OUT, 'approval.csv'));
   const ready = [];
   const held = [];
   const handles = new Set();
-  products.forEach((row, i) => {
+  for (const [i, row] of products.entries()) {
     const { problems } = checkRow(row);
     if (handles.has(row.handle))
       problems.push(`the handle "${row.handle}" is used by an earlier row`);
     handles.add(row.handle);
+    const earlier = sheet.videoFor(row.handle);
     if (problems.length) {
       console.log(`${row.handle}: held, ${problems.join('; ')}`);
       held.push({ row, notes: `held: ${problems.join('; ')}` });
@@ -923,13 +1002,13 @@ async function main() {
       console.log(
         `${row.handle}: skipped, out/${row.handle}.mp4 already exists`
       );
-    } else {
+    } else if (!earlier || !(await downloadEarlier(row.handle, earlier))) {
       ready.push({
         row,
         backdrop: brand.visual.backdrops[i % brand.visual.backdrops.length]
       });
     }
-  });
+  }
 
   // Each product can use every try on its stills and clips, and its render generates a
   // voice-over. The music is generated once.
@@ -937,7 +1016,6 @@ async function main() {
   if (ready.length && !flags.yes)
     return console.log(`${worstCase} Add --yes to start. Nothing was spent.`);
   fs.mkdirSync(path.join(OUT, 'clips'), { recursive: true });
-  const sheet = approvalSheet(path.join(OUT, 'approval.csv'));
   held.forEach(sheet.add);
   if (!ready.length) return console.log('No products to make.');
   console.log(worstCase);
