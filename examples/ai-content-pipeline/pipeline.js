@@ -771,17 +771,14 @@ export async function saveTemplate() {
   const saved = fs.existsSync(idFile)
     ? fs.readFileSync(idFile, 'utf8').trim()
     : '';
-  // A 404 means the template was deleted in the dashboard, so it is saved again below
-  const updated =
-    saved &&
-    (await shotstack('PUT', `/templates/${saved}`, body).then(
-      () => true,
-      error => {
-        if (error.status !== 404) throw error;
-        return false;
-      }
-    ));
-  if (updated) return saved;
+  if (saved)
+    try {
+      await shotstack('PUT', `/templates/${saved}`, body);
+      return saved;
+    } catch (error) {
+      // A 404 means the template was deleted in the dashboard, so it is saved again below
+      if (error.status !== 404) throw error;
+    }
   const { response } = await shotstack('POST', '/templates', body);
   if (!response?.id)
     throw new Error('the template was saved but the reply has no id');
